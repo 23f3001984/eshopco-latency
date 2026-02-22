@@ -1,8 +1,7 @@
-from flask import Flask, request, jsonify, make_response
+import json
 import statistics
 from collections import defaultdict
-
-app = Flask(__name__)
+from http.server import BaseHTTPRequestHandler
 
 TELEMETRY_RAW = [
   {"region":"apac","latency_ms":178.01,"uptime_pct":97.714},
@@ -48,14 +47,6 @@ for row in TELEMETRY_RAW:
     TELEMETRY[row["region"]].append(row)
 
 
-@app.after_request
-def add_cors(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    return response
-
-
 def compute_metrics(region, threshold_ms):
     records = TELEMETRY.get(region)
     if not records:
@@ -73,21 +64,55 @@ def compute_metrics(region, threshold_ms):
     }
 
 
-@app.route("/", methods=["GET", "POST", "OPTIONS"])
-@app.route("/api/index", methods=["GET", "POST", "OPTIONS"])
-def index():
-    if request.method == "OPTIONS":
-        return make_response("", 204)
-    if request.method == "GET":
-        return jsonify({"status": "ok", "regions": list(TELEMETRY.keys())})
+class handler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
 
-    payload = request.get_json(force=True, silent=True) or {}
-    regions = payload.get("regions", [])
-    threshold_ms = float(payload.get("threshold_ms", 180))
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
-    result = {}
-    for region in regions:
-        m = compute_metrics(region, threshold_ms)
-        result[region] = m if m is not None else {"error": "unknown region"}
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
 
-    return jsonify(result)
+    def do_GET(self):
+        body = json.dumps({"status": "ok"}).encode()
+        self.send_response(200)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length)
+            payload = json.loads(raw)
+            regions = payload.get("regions", [])
+            threshold_ms = float(payload.get("threshold_ms", 180))
+        except Exception as e:
+            body = json.dumps({"error": str(e)}).encode()
+            self.send_response(400)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        result = {}
+        for region in regions:
+            m = compute_metrics(region, threshold_ms)
+            result[region] = m if m is not None else {"error": "unknown region"}
+
+        body = json.dumps(result).encode()
+        self.send_response(200)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
