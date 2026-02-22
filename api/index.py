@@ -56,6 +56,14 @@ def home():
         headers=CORS_HEADERS
     )
 
+@app.get("/api")
+def api_help():
+    return {
+        "message": "The API is working! Send a POST request to this URL with the JSON body.",
+        "method_received": "GET",
+        "hint": "Use HTTPS and ensure no trailing slash."
+    }
+
 @app.post("/api")
 def get_metrics(params: TelemetryInput):
     load_data()
