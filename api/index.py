@@ -1,65 +1,80 @@
-import json
-import os
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import pandas as pd
 import numpy as np
+import os
 
-# Load data once
-BASE_DIR = os.path.dirname(__file__)
-DATA_PATH = os.path.join(BASE_DIR, "..", "data", "q-vercel-latency.json")
+app = FastAPI()
 
-with open(DATA_PATH) as f:
-    telemetry = json.load(f)
+# --- CORS HEADERS ---
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+    "Access-Control-Allow-Headers": "*",
+    "Access-Control-Expose-Headers": "Access-Control-Allow-Origin",
+}
 
+# --- PREFLIGHT HANDLER ---
+@app.options("/{path:path}")
+async def preflight_handler(path: str):
+    return JSONResponse(content={}, headers=CORS_HEADERS)
 
-def handler(request):
-    # CORS headers (important)
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-        "Access-Control-Expose-Headers": "Access-Control-Allow-Origin",
-    }
+# --- DATA LOADING ---
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_PATH = os.path.join(BASE_DIR, "data", "telemetry.json")
 
-    # Handle preflight request
-    if request.method == "OPTIONS":
-        return {
-            "statusCode": 200,
-            "headers": headers,
-            "body": ""
-        }
+df = None
 
-    # Only allow POST
-    if request.method != "POST":
-        return {
-            "statusCode": 405,
-            "headers": headers,
-            "body": json.dumps({"error": "Method not allowed"})
-        }
+def load_data():
+    global df
+    if df is not None: return
+    if not os.path.exists(DATA_PATH): return
 
-    # Parse input
-    body = json.loads(request.body)
-    regions = body.get("regions", [])
-    threshold = body.get("threshold_ms", 0)
+    try:
+        df = pd.read_json(DATA_PATH)
+        # Ensure column names are clean and match your snippet's expectations
+        df.columns = df.columns.str.lower().str.strip()
+        # The file has 'latency_ms' and 'uptime_pct', so we don't rename them.
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        df = pd.DataFrame()
+
+class TelemetryInput(BaseModel):
+    regions: list[str]
+    threshold_ms: float
+
+@app.post("/api")
+def get_metrics(params: TelemetryInput):
+    load_data()
+    
+    if df is None or df.empty:
+        return JSONResponse(content={"error": "Data not loaded"}, status_code=500, headers=CORS_HEADERS)
 
     result = {}
+    
+    # Iterate through each requested region (Per your snippet logic)
+    for region in params.regions:
+        # Filter for specific region (case-insensitive match)
+        region_data = df[df['region'].str.lower() == region.lower()]
 
-    for region in regions:
-        region_data = [r for r in telemetry if r["region"] == region]
-
-        if not region_data:
+        if region_data.empty:
             continue
 
-        latencies = [r["latency_ms"] for r in region_data]
-        uptimes = [r["uptime_pct"] for r in region_data]
+        # Extract series
+        latencies = region_data['latency_ms']
+        uptimes = region_data['uptime_pct']
+        threshold = params.threshold_ms
 
-        result[region] = {
-            "avg_latency": round(float(np.mean(latencies)), 2),
-            "p95_latency": round(float(np.percentile(latencies, 95)), 2),
-            "avg_uptime": round(float(np.mean(uptimes)), 2),
-            "breaches": sum(1 for l in latencies if l > threshold)
+        # Calculate Metrics
+        metrics = {
+            "avg_latency": round(float(latencies.mean()), 2),
+            "p95_latency": round(float(latencies.quantile(0.95)), 2),
+            "avg_uptime": round(float(uptimes.mean()), 2),
+            "breaches": int((latencies > threshold).sum())
         }
+        
+        # Add to result dictionary
+        result[region] = metrics
 
-    return {
-        "statusCode": 200,
-        "headers": headers,
-        "body": json.dumps(result)
-    }
+    return JSONResponse(content=result, headers=CORS_HEADERS)
