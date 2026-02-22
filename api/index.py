@@ -22,7 +22,7 @@ async def preflight_handler(path: str):
 
 # --- DATA LOADING ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_PATH = os.path.join(BASE_DIR, "data", "telemetry.json")
+DATA_PATH = os.path.join(BASE_DIR, "data", "q-vercel-latency.json")
 
 df = None
 
