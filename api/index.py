@@ -6,76 +6,54 @@ import os
 
 app = FastAPI()
 
-# Enable CORS
+# --- CRITICAL FIX: CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (POST, GET, OPTIONS, etc.)
+    allow_headers=["*"],  # Allows all headers
 )
+# --------------------------
 
-# Path to the JSON file
+# Path setup (same as before)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_PATH = os.path.join(BASE_DIR, "data", "q-vercel-latency.json") # Ensure file is named telemetry.json
+DATA_PATH = os.path.join(BASE_DIR, "data", "q-vercel-latency.json")
 
 class TelemetryInput(BaseModel):
     regions: list[str]
     threshold_ms: float
 
-# Global variable
+# Load data once
 df = None
-
-def load_data():
-    global df
-    if df is not None:
-        return
-    
-    if not os.path.exists(DATA_PATH):
-        print(f"File not found at {DATA_PATH}")
-        return
-
+if os.path.exists(DATA_PATH):
     try:
         df = pd.read_json(DATA_PATH)
-        
-        # Standardize columns to lowercase
         df.columns = df.columns.str.lower().str.strip()
-        
-        # RENAME columns to match logic if necessary
-        # We need 'latency' and 'uptime' for the calculations below
+        # Rename columns to standard names if needed
         rename_map = {}
-        if 'latency_ms' in df.columns:
-            rename_map['latency_ms'] = 'latency'
-        if 'uptime_pct' in df.columns:
-            rename_map['uptime_pct'] = 'uptime'
-            
-        if rename_map:
-            df.rename(columns=rename_map, inplace=True)
-            
+        if 'latency_ms' in df.columns: rename_map['latency_ms'] = 'latency'
+        if 'uptime_pct' in df.columns: rename_map['uptime_pct'] = 'uptime'
+        if rename_map: df.rename(columns=rename_map, inplace=True)
     except Exception as e:
         print(f"Error loading data: {e}")
 
 @app.post("/api")
 def get_metrics(params: TelemetryInput):
-    load_data()
-    
     if df is None or df.empty:
-        # Try to reload if empty (cold start edge case)
-        return {"error": "Data not loaded"}
+        raise HTTPException(status_code=500, detail="Data not loaded")
 
-    # Filter regions (case-insensitive)
+    # Filter
     target_regions = [r.lower() for r in params.regions]
     filtered = df[df['region'].str.lower().isin(target_regions)]
     
     if filtered.empty:
         return {
-            "avg_latency": 0.0,
-            "p95_latency": 0.0,
-            "avg_uptime": 0.0,
-            "breaches": 0
+            "avg_latency": 0.0, "p95_latency": 0.0,
+            "avg_uptime": 0.0, "breaches": 0
         }
 
-    # Calculate Metrics
-    # round() is used to make the output cleaner
+    # Calculate
     avg_latency = float(filtered['latency'].mean())
     p95_latency = float(filtered['latency'].quantile(0.95))
     avg_uptime = float(filtered['uptime'].mean())
