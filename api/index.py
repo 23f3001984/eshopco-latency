@@ -10,23 +10,19 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["*"],  # Allow all methods including POST
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Path to the JSON file
-# Ensure your folder structure is:
-# /api/index.py
-# /data/telemetry.json
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_PATH = os.path.join(BASE_DIR, "data", "q-vercel-latency.json")
+DATA_PATH = os.path.join(BASE_DIR, "data", "q-vercel-latency.json") # Ensure file is named telemetry.json
 
-# Input Schema
 class TelemetryInput(BaseModel):
     regions: list[str]
     threshold_ms: float
 
-# Global variable to cache data
+# Global variable
 df = None
 
 def load_data():
@@ -39,29 +35,35 @@ def load_data():
         return
 
     try:
-        # Load JSON data
         df = pd.read_json(DATA_PATH)
         
-        # Standardize column names (lowercase)
+        # Standardize columns to lowercase
         df.columns = df.columns.str.lower().str.strip()
         
+        # RENAME columns to match logic if necessary
+        # We need 'latency' and 'uptime' for the calculations below
+        rename_map = {}
+        if 'latency_ms' in df.columns:
+            rename_map['latency_ms'] = 'latency'
+        if 'uptime_pct' in df.columns:
+            rename_map['uptime_pct'] = 'uptime'
+            
+        if rename_map:
+            df.rename(columns=rename_map, inplace=True)
+            
     except Exception as e:
         print(f"Error loading data: {e}")
-        df = pd.DataFrame() # Create empty DF on error to prevent crashes
 
 @app.post("/api")
 def get_metrics(params: TelemetryInput):
     load_data()
     
     if df is None or df.empty:
-        raise HTTPException(status_code=500, detail="Telemetry data not loaded or empty")
+        # Try to reload if empty (cold start edge case)
+        return {"error": "Data not loaded"}
 
-    # Filter by regions requested (case-insensitive)
+    # Filter regions (case-insensitive)
     target_regions = [r.lower() for r in params.regions]
-    
-    # Filter the DataFrame
-    # Assumes 'region' column exists. If it's nested JSON, pandas usually flattens it well,
-    # but simple list-of-dicts is best.
     filtered = df[df['region'].str.lower().isin(target_regions)]
     
     if filtered.empty:
@@ -73,17 +75,15 @@ def get_metrics(params: TelemetryInput):
         }
 
     # Calculate Metrics
-    # We use .astype(float) to ensure JSON serialization works (numpy types can be tricky)
+    # round() is used to make the output cleaner
     avg_latency = float(filtered['latency'].mean())
     p95_latency = float(filtered['latency'].quantile(0.95))
     avg_uptime = float(filtered['uptime'].mean())
-    
-    # Count breaches (records where latency > threshold)
     breaches = int((filtered['latency'] > params.threshold_ms).sum())
 
     return {
         "avg_latency": round(avg_latency, 2),
         "p95_latency": round(p95_latency, 2),
-        "avg_uptime": round(avg_uptime, 4), # Uptime usually needs more precision
+        "avg_uptime": round(avg_uptime, 4),
         "breaches": breaches
     }
