@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import os
@@ -6,11 +6,11 @@ import numpy as np
 
 app = FastAPI()
 
-# Enable CORS
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["POST"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -20,6 +20,18 @@ DATA_PATH = os.path.join(BASE_DIR, "..", "data", "q-vercel-latency.json")
 
 with open(DATA_PATH) as f:
     telemetry = json.load(f)
+
+
+# Handle preflight explicitly (important for Vercel)
+@app.options("/api/latency")
+def options_handler():
+    return Response(
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
 
 
 @app.post("/api/latency")
@@ -46,4 +58,8 @@ async def get_metrics(request: Request):
             "breaches": sum(1 for l in latencies if l > threshold)
         }
 
-    return result
+    return Response(
+        content=json.dumps(result),
+        media_type="application/json",
+        headers={"Access-Control-Allow-Origin": "*"}
+    )
