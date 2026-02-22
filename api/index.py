@@ -88,4 +88,4 @@ def get_metrics(params: TelemetryInput):
         results[region] = metrics
 
     # Return the dictionary directly
-    return JSONResponse(content=results, headers=CORS_HEADERS)
+    return JSONResponse(content={"regions": results}, headers=CORS_HEADERS)
