@@ -1,20 +1,8 @@
-from fastapi import FastAPI, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
 import json
 import os
 import numpy as np
 
-app = FastAPI()
-
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Load data
+# Load data once
 BASE_DIR = os.path.dirname(__file__)
 DATA_PATH = os.path.join(BASE_DIR, "..", "data", "q-vercel-latency.json")
 
@@ -22,21 +10,32 @@ with open(DATA_PATH) as f:
     telemetry = json.load(f)
 
 
-# Handle preflight explicitly (important for Vercel)
-@app.options("/api/latency")
-def options_handler():
-    return Response(
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
+def handler(request):
+    # CORS headers (important)
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type"
+    }
+
+    # Handle preflight request
+    if request.method == "OPTIONS":
+        return {
+            "statusCode": 200,
+            "headers": headers,
+            "body": ""
         }
-    )
 
+    # Only allow POST
+    if request.method != "POST":
+        return {
+            "statusCode": 405,
+            "headers": headers,
+            "body": json.dumps({"error": "Method not allowed"})
+        }
 
-@app.post("/api/latency")
-async def get_metrics(request: Request):
-    body = await request.json()
+    # Parse input
+    body = json.loads(request.body)
     regions = body.get("regions", [])
     threshold = body.get("threshold_ms", 0)
 
@@ -58,8 +57,8 @@ async def get_metrics(request: Request):
             "breaches": sum(1 for l in latencies if l > threshold)
         }
 
-    return Response(
-        content=json.dumps(result),
-        media_type="application/json",
-        headers={"Access-Control-Allow-Origin": "*"}
-    )
+    return {
+        "statusCode": 200,
+        "headers": headers,
+        "body": json.dumps(result)
+    }
