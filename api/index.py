@@ -1,7 +1,8 @@
-from http.server import BaseHTTPRequestHandler
-import json
+from flask import Flask, request, jsonify, make_response
 import statistics
 from collections import defaultdict
+
+app = Flask(__name__)
 
 TELEMETRY_RAW = [
   {"region":"apac","latency_ms":178.01,"uptime_pct":97.714},
@@ -47,6 +48,14 @@ for row in TELEMETRY_RAW:
     TELEMETRY[row["region"]].append(row)
 
 
+@app.after_request
+def add_cors(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
+
+
 def compute_metrics(region, threshold_ms):
     records = TELEMETRY.get(region)
     if not records:
@@ -64,47 +73,21 @@ def compute_metrics(region, threshold_ms):
     }
 
 
-CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-}
+@app.route("/", methods=["GET", "POST", "OPTIONS"])
+@app.route("/api/index", methods=["GET", "POST", "OPTIONS"])
+def index():
+    if request.method == "OPTIONS":
+        return make_response("", 204)
+    if request.method == "GET":
+        return jsonify({"status": "ok", "regions": list(TELEMETRY.keys())})
 
+    payload = request.get_json(force=True, silent=True) or {}
+    regions = payload.get("regions", [])
+    threshold_ms = float(payload.get("threshold_ms", 180))
 
-class handler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
+    result = {}
+    for region in regions:
+        m = compute_metrics(region, threshold_ms)
+        result[region] = m if m is not None else {"error": "unknown region"}
 
-    def _write_response(self, status, body_dict):
-        body = json.dumps(body_dict).encode()
-        self.send_response(status)
-        for k, v in CORS_HEADERS.items():
-            self.send_header(k, v)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_OPTIONS(self):
-        self.send_response(204)
-        for k, v in CORS_HEADERS.items():
-            self.send_header(k, v)
-        self.end_headers()
-
-    def do_POST(self):
-        try:
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length)
-            payload = json.loads(body)
-            regions = payload.get("regions", [])
-            threshold_ms = float(payload.get("threshold_ms", 180))
-        except Exception as e:
-            self._write_response(400, {"error": f"Invalid request: {e}"})
-            return
-
-        result = {}
-        for region in regions:
-            m = compute_metrics(region, threshold_ms)
-            result[region] = m if m is not None else {"error": "unknown region"}
-
-        self._write_response(200, result)
+    return jsonify(result)
