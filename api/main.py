@@ -6,7 +6,7 @@ import numpy as np
 
 app = FastAPI()
 
-# Enable CORS for any origin (POST allowed)
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,10 +14,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load telemetry data
-DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "q-vercel-latency.json")
+# Load data
+BASE_DIR = os.path.dirname(__file__)
+DATA_PATH = os.path.join(BASE_DIR, "..", "data", "q-vercel-latency.json")
 
-with open(DATA_PATH, "r") as f:
+with open(DATA_PATH) as f:
     telemetry = json.load(f)
 
 
@@ -38,16 +39,11 @@ async def get_metrics(request: Request):
         latencies = [r["latency_ms"] for r in region_data]
         uptimes = [r["uptime_pct"] for r in region_data]
 
-        avg_latency = float(np.mean(latencies))
-        p95_latency = float(np.percentile(latencies, 95))
-        avg_uptime = float(np.mean(uptimes))
-        breaches = sum(1 for l in latencies if l > threshold)
-
         result[region] = {
-            "avg_latency": round(avg_latency, 2),
-            "p95_latency": round(p95_latency, 2),
-            "avg_uptime": round(avg_uptime, 2),
-            "breaches": breaches
+            "avg_latency": round(float(np.mean(latencies)), 2),
+            "p95_latency": round(float(np.percentile(latencies, 95)), 2),
+            "avg_uptime": round(float(np.mean(uptimes)), 2),
+            "breaches": sum(1 for l in latencies if l > threshold)
         }
 
     return result
