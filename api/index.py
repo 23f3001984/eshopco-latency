@@ -1,8 +1,7 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import pandas as pd
-import numpy as np
 import os
 
 app = FastAPI()
@@ -33,9 +32,9 @@ def load_data():
 
     try:
         df = pd.read_json(DATA_PATH)
-        # Ensure column names are clean and match your snippet's expectations
+        # Standardize columns to lowercase
         df.columns = df.columns.str.lower().str.strip()
-        # The file has 'latency_ms' and 'uptime_pct', so we don't rename them.
+        # Note: We expect 'latency_ms' and 'uptime_pct' based on your file
     except Exception as e:
         print(f"Error loading data: {e}")
         df = pd.DataFrame()
@@ -44,37 +43,49 @@ class TelemetryInput(BaseModel):
     regions: list[str]
     threshold_ms: float
 
+@app.get("/")
+def home():
+    return JSONResponse(content={"status": "Online"}, headers=CORS_HEADERS)
+
 @app.post("/api")
 def get_metrics(params: TelemetryInput):
     load_data()
     
     if df is None or df.empty:
-        return JSONResponse(content={"error": "Data not loaded"}, status_code=500, headers=CORS_HEADERS)
+        return JSONResponse(
+            content={"detail": "Data not loaded"}, 
+            status_code=500, 
+            headers=CORS_HEADERS
+        )
 
-    result = {}
+    # Dictionary to hold the result: {"apac": {...}, "amer": {...}}
+    results = {}
     
-    # Iterate through each requested region (Per your snippet logic)
     for region in params.regions:
-        # Filter for specific region (case-insensitive match)
-        region_data = df[df['region'].str.lower() == region.lower()]
+        # Filter for the specific region (case-insensitive)
+        region_df = df[df['region'].str.lower() == region.lower()]
 
-        if region_data.empty:
+        if region_df.empty:
             continue
 
         # Extract series
-        latencies = region_data['latency_ms']
-        uptimes = region_data['uptime_pct']
-        threshold = params.threshold_ms
-
-        # Calculate Metrics
+        # We handle 'latency_ms' vs 'latency' just in case
+        lat_col = 'latency_ms' if 'latency_ms' in region_df.columns else 'latency'
+        up_col = 'uptime_pct' if 'uptime_pct' in region_df.columns else 'uptime'
+        
+        latencies = region_df[lat_col]
+        uptimes = region_df[up_col]
+        
+        # Calculate Metrics (Rounded as requested)
         metrics = {
             "avg_latency": round(float(latencies.mean()), 2),
             "p95_latency": round(float(latencies.quantile(0.95)), 2),
-            "avg_uptime": round(float(uptimes.mean()), 2),
-            "breaches": int((latencies > threshold).sum())
+            "avg_uptime": round(float(uptimes.mean()), 4), # User output showed 3 decimals, 4 is safer
+            "breaches": int((latencies > params.threshold_ms).sum())
         }
         
-        # Add to result dictionary
-        result[region] = metrics
+        # Add to the main dictionary with the region name as the key
+        results[region] = metrics
 
-    return JSONResponse(content=result, headers=CORS_HEADERS)
+    # Return the dictionary directly
+    return JSONResponse(content=results, headers=CORS_HEADERS)
