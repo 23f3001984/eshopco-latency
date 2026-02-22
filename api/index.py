@@ -1,108 +1,65 @@
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-import pandas as pd
+import json
 import os
+import numpy as np
 
-app = FastAPI()
+# Load data once
+BASE_DIR = os.path.dirname(__file__)
+DATA_PATH = os.path.join(BASE_DIR, "..", "data", "q-vercel-latency.json")
 
-# --- CORS CONFIGURATION ---
-CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Expose-Headers": "Access-Control-Allow-Origin",
-}
+with open(DATA_PATH) as f:
+    telemetry = json.load(f)
 
-# --- PREFLIGHT HANDLER (For Vercel/Browser Checks) ---
-@app.options("/{path:path}")
-async def preflight_handler(path: str):
-    return JSONResponse(content={}, headers=CORS_HEADERS)
 
-# --- DATA LOADING SETUP ---
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_PATH = os.path.join(BASE_DIR, "data", "q-vercel-latency.json")
+def handler(request):
+    # CORS headers (important)
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Expose-Headers": "Access-Control-Allow-Origin",
+    }
 
-class TelemetryInput(BaseModel):
-    regions: list[str]
-    threshold_ms: float
+    # Handle preflight request
+    if request.method == "OPTIONS":
+        return {
+            "statusCode": 200,
+            "headers": headers,
+            "body": ""
+        }
 
-df = None
+    # Only allow POST
+    if request.method != "POST":
+        return {
+            "statusCode": 405,
+            "headers": headers,
+            "body": json.dumps({"error": "Method not allowed"})
+        }
 
-def load_data():
-    global df
-    if df is not None: return
-    if not os.path.exists(DATA_PATH): return
+    # Parse input
+    body = json.loads(request.body)
+    regions = body.get("regions", [])
+    threshold = body.get("threshold_ms", 0)
 
-    try:
-        df = pd.read_json(DATA_PATH)
-        df.columns = df.columns.str.lower().str.strip()
-        
-        # Fix column names to match what code expects
-        rename_map = {}
-        if 'latency_ms' in df.columns: rename_map['latency_ms'] = 'latency'
-        if 'uptime_pct' in df.columns: rename_map['uptime_pct'] = 'uptime'
-        if rename_map: df.rename(columns=rename_map, inplace=True)
-    except Exception as e:
-        print(f"Error: {e}")
-        df = pd.DataFrame()
+    result = {}
 
-# --- ROUTES ---
+    for region in regions:
+        region_data = [r for r in telemetry if r["region"] == region]
 
-@app.get("/")
-def home():
-    """Sanity check: If you see this, the deploy works!"""
-    return JSONResponse(
-        content={"status": "Online", "message": "POST request to /api to use the tool"}, 
-        headers=CORS_HEADERS
-    )
+        if not region_data:
+            continue
 
-@app.get("/api")
-def api_help():
+        latencies = [r["latency_ms"] for r in region_data]
+        uptimes = [r["uptime_pct"] for r in region_data]
+
+        result[region] = {
+            "avg_latency": round(float(np.mean(latencies)), 2),
+            "p95_latency": round(float(np.percentile(latencies, 95)), 2),
+            "avg_uptime": round(float(np.mean(uptimes)), 2),
+            "breaches": sum(1 for l in latencies if l > threshold)
+        }
+
     return {
-        "message": "The API is working! Send a POST request to this URL with the JSON body.",
-        "method_received": "GET",
-        "hint": "Use HTTPS and ensure no trailing slash."
+        "statusCode": 200,
+        "headers": headers,
+        "body": json.dumps(result)
     }
-
-@app.post("/api")
-def get_metrics(params: TelemetryInput):
-    load_data()
-    
-    # Error handling with CORS headers attached
-    if df is None or df.empty:
-        return JSONResponse(
-            status_code=500, 
-            content={"detail": "Data not loaded"}, 
-            headers=CORS_HEADERS
-        )
-
-    target_regions = [r.lower() for r in params.regions]
-    
-    if 'region' not in df.columns:
-         return JSONResponse(
-             status_code=500, 
-             content={"detail": "Region column missing"}, 
-             headers=CORS_HEADERS
-         )
-
-    filtered = df[df['region'].str.lower().isin(target_regions)]
-    
-    if filtered.empty:
-        result = {"avg_latency": 0.0, "p95_latency": 0.0, "avg_uptime": 0.0, "breaches": 0}
-        return JSONResponse(content=result, headers=CORS_HEADERS)
-
-    # Calculate
-    avg_latency = float(filtered['latency'].mean())
-    p95_latency = float(filtered['latency'].quantile(0.95))
-    avg_uptime = float(filtered['uptime'].mean())
-    breaches = int((filtered['latency'] > params.threshold_ms).sum())
-
-    result = {
-        "avg_latency": round(avg_latency, 2),
-        "p95_latency": round(p95_latency, 2),
-        "avg_uptime": round(avg_uptime, 4),
-        "breaches": breaches
-    }
-    
-    return JSONResponse(content=result, headers=CORS_HEADERS)
